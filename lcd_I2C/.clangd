@@ -1,3 +1,0 @@
-CompileFlags:
-  CompilationDatabase: E:\espworkspace\lcd_I2c\build
-  Remove: [-m*, -f*]

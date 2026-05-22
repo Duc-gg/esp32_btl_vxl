@@ -1,6 +1,6 @@
 .metadata/
-.project
 **/build/
-**.cproject
-**.project
-**.settings
+**/.cproject
+**/.project
+**/.settings/
+esp32_i2c_lcd/sdkconfig.old

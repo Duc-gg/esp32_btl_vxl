@@ -8,20 +8,20 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 #include "driver/adc.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 /* ── Chân kết nối ── */
 #define PIN_LO_MINUS    26              /* Leads-Off detection (-) */
 #define PIN_LO_PLUS     27              /* Leads-Off detection (+) */
 #define ADC_CHANNEL     ADC_CHANNEL_6   /* GPIO 34 */
-
-/* ── Cấu hình ADC ── */
 #define ADC_UNIT        ADC_UNIT_1
 #define ADC_ATTEN       ADC_ATTEN_DB_12 /* ~0–3.3V, sai số ±60mV */
 #define ADC_WIDTH       ADC_WIDTH_BIT_12
 
-/* ── Cấu hình hệ thống ── */
 #define ECG_SAMPLE_RATE_HZ  700    
 
+extern QueueHandle_t ecg_queue;
 /**
  * @brief Cấu hình ngoại vi ADC và chân GPIO Leads-Off cho AD8232
  */
@@ -35,10 +35,9 @@ void ad8232_configure(void);
 bool ad8232_is_leads_off(void);
 
 /**
- * @brief Đọc giá trị ADC thô từ cảm biến AD8232
- * * @return uint16_t Giá trị số hóa từ ADC (0 - 4095 tương ứng với cấu hình 12-bit)
+ * @brief Khởi động Timer độ phân giải cao để tự động lấy mẫu ở 700Hz
  */
-uint16_t ad8232_read_raw(void);
+void ad8232_start_sampling(void);
 
 #ifdef __cplusplus
 }

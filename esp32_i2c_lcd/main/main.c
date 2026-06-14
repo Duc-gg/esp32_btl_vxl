@@ -3,6 +3,7 @@
 #include "../components/ad8232/ad8232.h"
 #include "../components/max30102/max30102.h"
 #include "../components/uart_packet/uart_packet.h"
+#include "../components/wifi_udp/wifi_udp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -16,6 +17,35 @@ static const char *TAG_MAIN = "MAIN_APP";
 /**
  * @brief Task xử lý đọc dữ liệu từ các cảm biến và gửi qua UART
  */
+void sensor_task(void *pvParameter);
+/**
+ * @brief Hàm khởi chạy chính của ứng dụng ESP-IDF
+ */
+void app_main(void)
+{
+    ESP_LOGI(TAG_MAIN, "He thong bat dau khoi tao cac module...");
+
+    uart_binary_init();
+	wifi_udp_init();
+
+    ad8232_configure();
+
+    if (max30102_init() != ESP_OK) {
+        ESP_LOGE(TAG_MAIN, "Loi nghiem trong: Khong the khoi tao MAX30102. Dung luong thuc thi.");
+        return;
+    }
+
+    xTaskCreatePinnedToCore(
+        sensor_task,          /* Hàm thực thi task */
+        "sensor_task",        /* Tên định danh task */
+        4096,                 /* Độ lớn Stack cấp phát (4KB) */
+        NULL,                 /* Tham số truyền vào task */
+        10,                   /* Độ ưu tiên của task (Càng cao càng ưu tiên) */
+        NULL,                 /* Task handle */
+        1                     /* Gán chạy cố định trên Core 1 */
+    );
+}
+
 void sensor_task(void *pvParameter)
 {
    	 uint16_t ecg_buffer[PACKET_ECG_SAMPLES]; 
@@ -49,29 +79,3 @@ void sensor_task(void *pvParameter)
          }
      }
  }
-/**
- * @brief Hàm khởi chạy chính của ứng dụng ESP-IDF
- */
-void app_main(void)
-{
-    ESP_LOGI(TAG_MAIN, "He thong bat dau khoi tao cac module...");
-
-    uart_binary_init();
-
-    ad8232_configure();
-
-    if (max30102_init() != ESP_OK) {
-        ESP_LOGE(TAG_MAIN, "Loi nghiem trong: Khong the khoi tao MAX30102. Dung luong thuc thi.");
-        return;
-    }
-
-    xTaskCreatePinnedToCore(
-        sensor_task,          /* Hàm thực thi task */
-        "sensor_task",        /* Tên định danh task */
-        4096,                 /* Độ lớn Stack cấp phát (4KB) */
-        NULL,                 /* Tham số truyền vào task */
-        10,                   /* Độ ưu tiên của task (Càng cao càng ưu tiên) */
-        NULL,                 /* Task handle */
-        1                     /* Gán chạy cố định trên Core 1 */
-    );
-}

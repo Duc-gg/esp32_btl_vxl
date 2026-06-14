@@ -1,5 +1,5 @@
 #include "uart_packet.h"
-
+#include "wifi_udp.h"
 #include "esp_log.h"
 #include "esp_err.h"
 
@@ -58,4 +58,5 @@ void protocol_send_packet(const uint16_t *ecg_buf, uint32_t red, uint32_t ir)
 
     /* 6. Gửi toàn bộ mảng dữ liệu qua UART */
     uart_write_bytes(UART_PORT, (const char *)buf, sizeof(buf));
+	wifi_udp_send(buf, sizeof(buf));
 }

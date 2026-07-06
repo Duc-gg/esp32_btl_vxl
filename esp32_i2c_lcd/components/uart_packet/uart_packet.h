@@ -29,7 +29,7 @@ void uart_binary_init(void);
  * @param red Giá trị PPG từ LED đỏ (4 bytes)
  * @param ir Giá trị PPG từ LED hồng ngoại (4 bytes)
  */
-void protocol_send_packet(const uint16_t *ecg_buf, uint32_t red, uint32_t ir);
+void protocol_send_packet(const uint16_t *ecg_buf, uint32_t red, uint32_t ir, uint8_t seq_num);
 
 #ifdef __cplusplus
 }

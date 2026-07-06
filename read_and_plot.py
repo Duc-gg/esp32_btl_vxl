@@ -34,7 +34,7 @@ UDP_IP = '0.0.0.0'
 UDP_PORT = 12345           
 
 # --- Protocol Packet Config ---
-PACKET_LEN = 25
+PACKET_LEN = 26            # Đã tăng từ 25 lên 26 để thêm seq_num
 HEADER = bytes([0xAA, 0x55])
 
 # --- Sampling Rates ---
@@ -53,13 +53,16 @@ def calculate_checksum(payload_bytes):
 def parse_packet(pkt):
     if len(pkt) != PACKET_LEN:
         return None
-    if calculate_checksum(pkt[2:24]) != pkt[24]:
+    # Checksum tích lũy từ byte chứa seq_num (idx 2) đến byte dữ liệu cuối cùng (idx 24)
+    if calculate_checksum(pkt[2:25]) != pkt[25]:
         return None
     
-    ecg_samples = struct.unpack('>7H', pkt[2:16])
-    red_val = struct.unpack('>I', pkt[16:20])[0] & 0x03FFFF
-    ir_val = struct.unpack('>I', pkt[20:24])[0] & 0x03FFFF
-    return (ecg_samples, red_val, ir_val)
+    # Trích xuất dữ liệu dựa theo offset mới (dịch sau seq_num)
+    seq_num = pkt[2]
+    ecg_samples = struct.unpack('>7H', pkt[3:17])
+    red_val = struct.unpack('>I', pkt[17:21])[0] & 0x03FFFF
+    ir_val = struct.unpack('>I', pkt[21:25])[0] & 0x03FFFF
+    return (seq_num, ecg_samples, red_val, ir_val)
 
 
 class CsvLogger(threading.Thread):
@@ -70,7 +73,8 @@ class CsvLogger(threading.Thread):
         self.running = True
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.filename = f"sensor_data_unified_{current_time}.csv"
-        self.headers = ["Timestamp", "Mode", "ECG_1", "ECG_2", "ECG_3", "ECG_4", "ECG_5", "ECG_6", "ECG_7", "PPG_RED", "PPG_IR"]
+        # Đã thêm cột Seq_Num vào tiêu đề file CSV
+        self.headers = ["Timestamp", "Mode", "Seq_Num", "ECG_1", "ECG_2", "ECG_3", "ECG_4", "ECG_5", "ECG_6", "ECG_7", "PPG_RED", "PPG_IR"]
 
     def run(self):
         abs_path = os.path.abspath(self.filename)
@@ -82,17 +86,16 @@ class CsvLogger(threading.Thread):
             
             while self.running:
                 try:
-                    # Block until data is available, then batch dump queue to minimize file I/O operations
                     item = self.log_queue.get(timeout=0.5)
                     batch = [item]
                     while not self.log_queue.empty() and len(batch) < 1000:
                         batch.append(self.log_queue.get_nowait())
                     
                     rows = []
-                    for (ts, mode, ecg, red, ir) in batch:
-                        # Convert float timestamp to string just before writing
+                    for (ts, mode, seq_num, ecg, red, ir) in batch:
                         ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S.%f")[:-3]
-                        rows.append([ts_str, mode] + list(ecg) + [red, ir])
+                        # Ghi nhận thêm giá trị seq_num vào hàng
+                        rows.append([ts_str, mode, seq_num] + list(ecg) + [red, ir])
                         
                     writer.writerows(rows)
                     csv_file.flush()
@@ -115,7 +118,6 @@ class SerialReader(threading.Thread):
         ser = None
         
         while self.running:
-            # 1. Auto-Reconnect Logic
             if ser is None or not ser.is_open:
                 try:
                     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
@@ -123,11 +125,9 @@ class SerialReader(threading.Thread):
                     ser.setRTS(False)
                     print(f"\n[UART] Successfully Connected to {SERIAL_PORT} @ {BAUD_RATE} baud.")
                 except Exception:
-                    # Fails silently and retries every 2 seconds if sensor isn't plugged in yet
                     time.sleep(2)
                     continue
             
-            # 2. Data Reading Logic
             try:
                 data = ser.read(1024)
                 if data:
@@ -152,11 +152,11 @@ class SerialReader(threading.Thread):
                     if result is None:
                         continue
                     
-                    ecg_samples, red_val, ir_val = result
+                    seq_num, ecg_samples, red_val, ir_val = result
                     ts = time.time()
                     
-                    self.log_queue.put((ts, self.mode_tag, ecg_samples, red_val, ir_val))
-                    self.data_queue.append((self.mode_tag, ecg_samples, red_val, ir_val))
+                    self.log_queue.put((ts, self.mode_tag, seq_num, ecg_samples, red_val, ir_val))
+                    self.data_queue.append((self.mode_tag, seq_num, ecg_samples, red_val, ir_val))
                         
             except serial.SerialException:
                 print(f"\n[UART] Sensor disconnected from {SERIAL_PORT}. Waiting for reconnection...")
@@ -169,6 +169,7 @@ class SerialReader(threading.Thread):
                 
         if ser and ser.is_open:
             ser.close()
+
 
 class UdpReader(threading.Thread):
     def __init__(self, data_queue, log_queue):
@@ -196,11 +197,11 @@ class UdpReader(threading.Thread):
                 if result is None:
                     continue
 
-                ecg_samples, red_val, ir_val = result
+                seq_num, ecg_samples, red_val, ir_val = result
                 ts = time.time()
 
-                self.log_queue.put((ts, self.mode_tag, ecg_samples, red_val, ir_val))
-                self.data_queue.append((self.mode_tag, ecg_samples, red_val, ir_val))
+                self.log_queue.put((ts, self.mode_tag, seq_num, ecg_samples, red_val, ir_val))
+                self.data_queue.append((self.mode_tag, seq_num, ecg_samples, red_val, ir_val))
 
             except socket.timeout:
                 continue  
@@ -215,7 +216,6 @@ class RealTimePlot:
         self.data_queue = data_queue
         self.active_mode = DEFAULT_SOURCE
         
-        # Pre-allocate numpy arrays for zero-copy in-place shifting
         self.ecg_data = np.zeros(ECG_MAX_SAMPLES)
         self.red_data = np.zeros(PPG_MAX_SAMPLES)
         self.ir_data = np.zeros(PPG_MAX_SAMPLES)
@@ -224,6 +224,12 @@ class RealTimePlot:
         self.ppg_sample_counter = 0
         self.last_frequency_check_time = time.time()
         
+        # --- KHỞI TẠO BỘ ĐẾM SỐ THỨ TỰ & PACKET LOSS ---
+        # Chỉ số 0 đại diện cho UART, Chỉ số 1 đại diện cho Wi-Fi
+        self.last_seq = [None, None]
+        self.lost_counter = [0, 0]
+        self.total_counter = [0, 0]
+        
         self.app = QApplication(sys.argv)
         self.main_win = QWidget()
         self.main_win.setWindowTitle("Biometric Stream Analytics Platform")
@@ -231,12 +237,10 @@ class RealTimePlot:
         
         self.setup_ui()
         
-        # UI Chart Timer (Fast: 33ms ~ 30fps)
         self.timer_chart = pg.QtCore.QTimer()
         self.timer_chart.timeout.connect(self.update_charts)
         self.timer_chart.start(33) 
         
-        # DSP Processing Timer (1000ms)
         self.timer_dsp = pg.QtCore.QTimer()
         self.timer_dsp.timeout.connect(self.calculate_biometrics)
         self.timer_dsp.start(1000)
@@ -264,8 +268,8 @@ class RealTimePlot:
         self.lbl_spo2.setStyleSheet("color: #FF5722; padding: 10px; background-color: #1E1E1E; border-radius: 5px;")
         self.lbl_spo2.setAlignment(Qt.AlignCenter)
         
-        self.lbl_freq = QLabel("Sample Rate: Tracking...")
-        self.lbl_freq.setFont(QFont("Arial", 14, QFont.Bold))
+        self.lbl_freq = QLabel("Telemetry Stats: Tracking...")
+        self.lbl_freq.setFont(QFont("Arial", 12, QFont.Bold))
         self.lbl_freq.setStyleSheet("color: #E0E0E0; padding: 10px; background-color: #2D2D2D; border-radius: 5px;")
         self.lbl_freq.setAlignment(Qt.AlignCenter)
         
@@ -298,13 +302,11 @@ class RealTimePlot:
         master_layout.addWidget(self.win)
         
         self.plot_ecg = self.win.addPlot()
-        # Removed disableAutoRange to ensure data remains visible if it drifts
         self.curve_ecg = self.plot_ecg.plot(pen=pg.mkPen('#4CAF50', width=1.5))
         
         self.win.nextRow()
         
         self.plot_ppg = self.win.addPlot()
-        # Removed disableAutoRange so high PPG values pull the camera upward correctly
         self.curve_red = self.plot_ppg.plot(pen=pg.mkPen('#FF5722', width=2), name="Red")
         self.curve_ir = self.plot_ppg.plot(pen=pg.mkPen('#00BCD4', width=2), name="IR")
         
@@ -317,20 +319,23 @@ class RealTimePlot:
         self.active_mode = 0 if self.btn_uart.isChecked() else 1
         self.update_plot_titles()
         
-        # Flush visuals
         self.ecg_data.fill(0)
         self.red_data.fill(0)
         self.ir_data.fill(0)
         
-        # Safe to clear queue since GUI is the only consumer
         self.data_queue.clear()
         
         self.lbl_ecg_bpm.setText("ECG BPM: --")
         self.lbl_ppg_bpm.setText("PPG BPM: --")
         self.lbl_spo2.setText("SpO₂: -- %")
-        self.lbl_freq.setText("Sample Rate: Resetting...")
+        self.lbl_freq.setText("Telemetry Stats: Resetting...")
         self.ecg_sample_counter = 0
         self.ppg_sample_counter = 0
+        
+        # Reset bộ đếm phân tích gói khi chuyển kênh
+        self.last_seq = [None, None]
+        self.lost_counter = [0, 0]
+        self.total_counter = [0, 0]
         self.last_frequency_check_time = time.time()
         
     def update_plot_titles(self):
@@ -341,12 +346,23 @@ class RealTimePlot:
     def update_charts(self):
         new_ecg, new_red, new_ir = [], [], []
         
-        # Drain the current queue chunk
         n_items = len(self.data_queue)
         for _ in range(n_items):
-            mode, ecg_samples, red_val, ir_val = self.data_queue.popleft()
+            mode, seq_num, ecg_samples, red_val, ir_val = self.data_queue.popleft()
             
-            # Filter and parse only the active GUI stream
+            # --- LOGIC TÍNH PACKET LOSS DỰA TRÊN SEQUENCE NUMBER (MODULO 256) ---
+            if self.last_seq[mode] is not None:
+                diff = (seq_num - self.last_seq[mode]) % 256
+                if diff > 0:
+                    if diff > 1:
+                        self.lost_counter[mode] += (diff - 1)
+                    self.total_counter[mode] += diff
+            else:
+                self.total_counter[mode] += 1
+            
+            self.last_seq[mode] = seq_num
+
+            # Tách riêng dữ liệu của luồng hiển thị đang kích hoạt để vẽ đồ thị
             if mode == self.active_mode:
                 new_ecg.extend(ecg_samples)
                 new_red.append(red_val)
@@ -360,7 +376,6 @@ class RealTimePlot:
         ecg_len = len(new_ecg)
         ppg_len = len(new_red)
         
-        # In-Place memory shifts (avoids creating new arrays)
         if ecg_len > 0:
             if ecg_len >= ECG_MAX_SAMPLES:
                 self.ecg_data[:] = new_ecg[-ECG_MAX_SAMPLES:]
@@ -385,13 +400,29 @@ class RealTimePlot:
     def calculate_biometrics(self):
         right_now = time.time()
         duration = right_now - self.last_frequency_check_time
+        
+        # --- HIỂN THỊ ĐỒNG THỜI TẦN SỐ VÀ % PACKET LOSS LÊN UI ---
+        uart_loss = 0.0
+        if self.total_counter[0] > 0:
+            uart_loss = (self.lost_counter[0] / self.total_counter[0]) * 100
+            
+        wifi_loss = 0.0
+        if self.total_counter[1] > 0:
+            wifi_loss = (self.lost_counter[1] / self.total_counter[1]) * 100
+
         if duration > 0:
             current_fs_ecg = self.ecg_sample_counter / duration
             current_fs_ppg = self.ppg_sample_counter / duration
-            self.lbl_freq.setText(f"Freq: ECG {current_fs_ecg:.1f}Hz | PPG {current_fs_ppg:.1f}Hz")
+            self.lbl_freq.setText(
+                f"UART Loss: {uart_loss:.1f}% | Wi-Fi Loss: {wifi_loss:.1f}% | "
+                f"Freq: ECG {current_fs_ecg:.1f}Hz | PPG {current_fs_ppg:.1f}Hz"
+            )
         
+        # Reset các biến đếm chu kỳ
         self.ecg_sample_counter = 0
         self.ppg_sample_counter = 0
+        self.lost_counter = [0, 0]
+        self.total_counter = [0, 0]
         self.last_frequency_check_time = right_now
 
         # ECG Calculation
@@ -482,13 +513,11 @@ class RealTimePlot:
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)  
     
-    # Thread-safe queues
     data_queue = collections.deque()
     log_queue = queue.Queue() 
     
     threads_to_manage = []
 
-    # Start independent logger thread
     csv_thread = CsvLogger(log_queue)
     threads_to_manage.append(csv_thread)
 

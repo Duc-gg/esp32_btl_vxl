@@ -50,7 +50,8 @@ void sensor_task(void *pvParameter)
 {
    	 uint16_t ecg_buffer[PACKET_ECG_SAMPLES]; 
      uint8_t ecg_idx = 0;
-     uint32_t last_red = 0, last_ir = 0; // Chống rớt mẫu MAX30102
+     uint32_t last_red = 0, last_ir = 0; 
+	 uint8_t seq_num = 0;
      
      // Bắt đầu chạy bộ đếm thời gian 700Hz
      ad8232_start_sampling();
@@ -60,7 +61,7 @@ void sensor_task(void *pvParameter)
          
          // Task này sẽ "ngủ" cho đến khi Timer đẩy dữ liệu vào Queue
          if (xQueueReceive(ecg_queue, &current_sample, portMAX_DELAY)) {
-             
+
              ecg_buffer[ecg_idx++] = current_sample;
 
              // Khi gom đủ 7 mẫu, gửi gói tin
@@ -70,12 +71,15 @@ void sensor_task(void *pvParameter)
                  if (max30102_read_fifo(&red_val, &ir_val) == ESP_OK) {
                      last_red = red_val;
                      last_ir = ir_val;
-                     protocol_send_packet(ecg_buffer, red_val, ir_val);
+                     protocol_send_packet(ecg_buffer, red_val, ir_val, seq_num);
                  } else {
-                     protocol_send_packet(ecg_buffer, last_red, last_ir); 
+                     protocol_send_packet(ecg_buffer, last_red, last_ir, seq_num); 
                  }
                  ecg_idx = 0;
+				 seq_num++;
              }
+			 
          }
+		 
      }
  }
